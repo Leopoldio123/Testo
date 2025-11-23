@@ -19,7 +19,7 @@
         label { display: block; margin-bottom: 4px; font-size: 14px; color: var(--tg-theme-hint-color, #888); }
         input {
             width: 100%;
-            padding: 10px;
+            padding: 12px;
             box-sizing: border-box;
             border: 1px solid #ccc;
             border-radius: 8px;
@@ -39,6 +39,7 @@
             cursor: pointer;
             margin-top: 10px;
         }
+        button:active { opacity: 0.8; }
         .result-card {
             background: var(--tg-theme-secondary-bg-color, #f5f5f5);
             padding: 12px;
@@ -48,6 +49,7 @@
         }
         .result-title { font-weight: bold; margin-bottom: 8px; display: block; font-size: 16px;}
         .result-line { margin-bottom: 4px; font-size: 14px; }
+        .error-msg { color: red; font-weight: bold; margin-top: 10px; white-space: pre-wrap; }
         pre { 
             white-space: pre-wrap; 
             font-family: monospace; 
@@ -62,37 +64,37 @@
     
     <div class="input-group">
         <label>Длина (L)</label>
-        <input type="number" id="lenL" placeholder="Например: 5000">
+        <input type="number" id="lenL" placeholder="5000">
     </div>
     <div class="input-group">
         <label>Ширина (W)</label>
-        <input type="number" id="widW" placeholder="Например: 3000">
+        <input type="number" id="widW" placeholder="3000">
     </div>
     <div class="input-group">
         <label>Высота (H)</label>
-        <input type="number" id="hgtH" placeholder="Например: 2500">
+        <input type="number" id="hgtH" placeholder="2500">
     </div>
 
-    <button onclick="calculate()">РАССЧИТАТЬ</button>
+    <button id="calcBtn">РАССЧИТАТЬ</button>
 
     <div id="output"></div>
 
     <script>
-        // Инициализация Telegram WebApp
-        const tg = window.Telegram.WebApp;
-        tg.expand();
-
-        // --- ЛОГИКА РАСЧЕТА (Переписано с Python на JS) ---
+        // --- НАСТРОЙКИ ---
         const PANEL_LENGTH_MM = 6000;
         const MIN_OFFCUT_LENGTH_MM = 400;
 
+        // Попытка инициализации Telegram
+        let tg = window.Telegram.WebApp;
+        try { tg.expand(); } catch(e) { console.log("Not in Telegram"); }
+
+        // --- КЛАСС ДВИЖКА ---
         class NestingEngine {
             constructor(panelWidth) {
                 this.panelWidth = panelWidth;
                 this.panelLength = PANEL_LENGTH_MM;
                 this.sheetsUsed = 0;
-                this.offcuts = []; // {length, width}
-                this.log = [];
+                this.offcuts = []; 
             }
 
             findBestOffcut(reqLen, reqWidth) {
@@ -112,21 +114,18 @@
                 return bestIdx;
             }
 
-            getPiece(length, width, context) {
+            getPiece(length, width) {
                 const idx = this.findBestOffcut(length, width);
 
                 if (idx !== -1) {
                     // Берем остаток
                     const sourcePiece = this.offcuts.splice(idx, 1)[0];
-                    // this.log.push(`♻️ ${context}: Взят остаток ${sourcePiece.length}x${sourcePiece.width}`);
-
-                    // Остаток по длине
+                    
                     const remLen = sourcePiece.length - length;
                     if (remLen >= MIN_OFFCUT_LENGTH_MM) {
                         this.offcuts.push({ length: remLen, width: sourcePiece.width });
                     }
                     
-                    // Остаток по ширине
                     const remWidth = sourcePiece.width - width;
                     if (remWidth >= 100) {
                         this.offcuts.push({ length: length, width: remWidth });
@@ -135,7 +134,6 @@
                 } else {
                     // Новый лист
                     this.sheetsUsed++;
-                    // this.log.push(`🆕 ${context}: Новый лист`);
 
                     const remLen = this.panelLength - length;
                     if (remLen >= MIN_OFFCUT_LENGTH_MM) {
@@ -149,74 +147,108 @@
                 }
             }
 
-            processSurface(name, totalLength, cutLength) {
+            processSurface(totalLength, cutLength) {
+                // Защита от деления на 0 или плохих данных
+                if (!cutLength || !totalLength) return;
+
                 const fullStrips = Math.floor(totalLength / this.panelWidth);
                 const lastStripWidth = totalLength % this.panelWidth;
 
                 for (let i = 0; i < fullStrips; i++) {
-                    this.getPiece(cutLength, this.panelWidth, `${name} (целая)`);
+                    this.getPiece(cutLength, this.panelWidth);
                 }
 
                 if (lastStripWidth > 0) {
-                    this.getPiece(cutLength, lastStripWidth, `${name} (добор)`);
+                    this.getPiece(cutLength, lastStripWidth);
                 }
             }
         }
 
+        // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
         function runEngine(L, W, H, panelWidth) {
             const engine = new NestingEngine(panelWidth);
             
-            // Логика размеров из ТЗ:
             const floorCeilCutLen = W + 200; 
             const floorCeilCoverLen = L;
             
             // Пол и Потолок
-            engine.processSurface("Пол", floorCeilCoverLen, floorCeilCutLen);
-            engine.processSurface("Потолок", floorCeilCoverLen, floorCeilCutLen);
+            engine.processSurface(floorCeilCoverLen, floorCeilCutLen); // Пол
+            engine.processSurface(floorCeilCoverLen, floorCeilCutLen); // Потолок
             
-            // Стены (Монтаж: L - длина покрытия, H - высота панели/куска)
-            engine.processSurface("Стена Л", H, L);
-            engine.processSurface("Стена П", H, L);
+            // Стены (L - длина покрытия, H - высота панели)
+            engine.processSurface(L, H); // Стена Л
+            engine.processSurface(L, H); // Стена П
 
-            // Торцы
-            engine.processSurface("Задняя", W, H);
-            engine.processSurface("Двери", W, H);
+            // Торцы (W - ширина покрытия, H - высота панели)
+            engine.processSurface(W, H); // Задняя
+            engine.processSurface(W, H); // Двери
 
             return engine;
         }
 
         function formatReport(width, engine) {
-            let html = `<div class="result-card">`;
-            html += `<span class="result-title">🛠 Панели ${width}мм</span>`;
-            html += `<div class="result-line">📦 Листов 6000мм: <b>${engine.sheetsUsed} шт</b></div>`;
+            let html = '<div class="result-card">';
+            html += '<span class="result-title">🛠 Панели ' + width + 'мм</span>';
+            html += '<div class="result-line">📦 Листов 6000мм: <b>' + engine.sheetsUsed + ' шт</b></div>';
             
-            // Группировка остатков
             const counts = {};
             engine.offcuts.forEach(o => {
-                const key = `${o.length}x${o.width}`;
+                const key = o.length + 'x' + o.width;
                 counts[key] = (counts[key] || 0) + 1;
             });
 
             let offcutsStr = "";
             for (const [size, count] of Object.entries(counts)) {
-                offcutsStr += `• ${size}мм: ${count} шт\n`;
+                offcutsStr += '• ' + size + 'мм: ' + count + ' шт\n';
             }
             if (!offcutsStr) offcutsStr = "Нет полезных остатков";
 
-            html += `<div class="result-line">✂️ Остатки:</div>`;
-            html += `<pre>${offcutsStr}</pre>`;
-            html += `</div>`;
+            html += '<div class="result-line">✂️ Остатки:</div>';
+            html += '<pre>' + offcutsStr + '</pre>';
+            html += '</div>';
             return html;
         }
 
-        function calculate() {
-            const L = parseInt(document.getElementById('lenL').value);
-            const W = parseInt(document.getElementById('widW').value);
-            const H = parseInt(document.getElementById('hgtH').value);
+        // --- ГЛАВНАЯ ФУНКЦИЯ ---
+        function handleCalculate() {
+            const output = document.getElementById('output');
+            output.innerHTML = "Считаю..."; // Индикатор работы
+            
+            try {
+                // Чтение и проверка ввода
+                const L = parseInt(document.getElementById('lenL').value);
+                const W = parseInt(document.getElementById('widW').value);
+                const H = parseInt(document.getElementById('hgtH').value);
 
-            if (!L || !W || !H) {
-                tg.showAlert("Пожалуйста, введите все размеры!");
-                return;
+                if (isNaN(L) || isNaN(W) || isNaN(H)) {
+                    alert("Пожалуйста, заполните все поля цифрами!");
+                    output.innerHTML = "";
+                    return;
+                }
+
+                // Очистка
+                output.innerHTML = ""; 
+
+                // Расчет 1000
+                const engine1000 = runEngine(L, W, H, 1000);
+                output.innerHTML += formatReport(1000, engine1000);
+
+                // Расчет 1190
+                const engine1190 = runEngine(L, W, H, 1190);
+                output.innerHTML += formatReport(1190, engine1190);
+                
+                // Вибрация для подтверждения (если доступна)
+                if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+
+            } catch (error) {
+                // ЕСЛИ ОШИБКА — ПОКАЖЕМ ЕЁ НА ЭКРАНЕ
+                output.innerHTML = '<div class="error-msg">ОШИБКА: ' + error.message + '<br>' + error.stack + '</div>';
             }
+        }
 
-            const
+        // Привязка кнопки (самый надежный способ)
+        document.getElementById('calcBtn').addEventListener('click', handleCalculate);
+
+    </script>
+</body>
+</html>
