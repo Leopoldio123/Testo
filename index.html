@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Калькулятор Печи</title>
+    <title>Калькулятор Печи PRO</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         body {
@@ -40,6 +40,8 @@
             margin-top: 10px;
         }
         button:active { opacity: 0.8; }
+        
+        /* Карточка результата */
         .result-card {
             background: var(--tg-theme-secondary-bg-color, #f5f5f5);
             padding: 12px;
@@ -49,52 +51,68 @@
         }
         .result-title { font-weight: bold; margin-bottom: 8px; display: block; font-size: 16px;}
         .result-line { margin-bottom: 4px; font-size: 14px; }
-        .error-msg { color: red; font-weight: bold; margin-top: 10px; white-space: pre-wrap; }
-        pre { 
-            white-space: pre-wrap; 
-            font-family: monospace; 
-            font-size: 12px; 
+        
+        /* Лог действий */
+        details { margin-top: 10px; }
+        summary { cursor: pointer; font-size: 14px; color: var(--tg-theme-link-color, #3390ec); font-weight: bold; }
+        .log-box {
+            background: rgba(0,0,0,0.05);
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
             color: var(--tg-theme-text-color);
         }
+        
+        .error-msg { color: red; font-weight: bold; margin-top: 10px; }
     </style>
 </head>
 <body>
 
-    <h2>Параметры печи (мм)</h2>
+    <h2>Внутренние размеры (мм)</h2>
     
     <div class="input-group">
         <label>Длина (L)</label>
-        <input type="number" id="lenL" placeholder="5000">
+        <input type="number" id="lenL" placeholder="3500">
     </div>
     <div class="input-group">
         <label>Ширина (W)</label>
-        <input type="number" id="widW" placeholder="3000">
+        <input type="number" id="widW" placeholder="1800">
     </div>
     <div class="input-group">
         <label>Высота (H)</label>
-        <input type="number" id="hgtH" placeholder="2500">
+        <input type="number" id="hgtH" placeholder="2000">
     </div>
 
-    <button id="calcBtn">РАССЧИТАТЬ</button>
+    <button id="calcBtn">РАССЧИТАТЬ МАТЕРИАЛЫ</button>
 
     <div id="output"></div>
 
     <script>
-        // --- НАСТРОЙКИ ---
+        // --- КОНФИГУРАЦИЯ ---
         const PANEL_LENGTH_MM = 6000;
-        const MIN_OFFCUT_LENGTH_MM = 400;
+        const MIN_OFFCUT_LENGTH_MM = 400; // Меньше этого - мусор
 
-        // Попытка инициализации Telegram
         let tg = window.Telegram.WebApp;
-        try { tg.expand(); } catch(e) { console.log("Not in Telegram"); }
+        try { tg.expand(); } catch(e) {}
 
-        // --- КЛАСС ДВИЖКА ---
+        // --- КЛАСС РАСЧЕТА ---
         class NestingEngine {
             constructor(panelWidth) {
                 this.panelWidth = panelWidth;
                 this.panelLength = PANEL_LENGTH_MM;
                 this.sheetsUsed = 0;
-                this.offcuts = []; 
+                this.offcuts = []; // {length, width, id}
+                this.log = []; // Текстовый журнал
+            }
+
+            // Добавить запись в журнал
+            addLog(msg) {
+                this.log.push(msg);
             }
 
             findBestOffcut(reqLen, reqWidth) {
@@ -114,141 +132,134 @@
                 return bestIdx;
             }
 
-            getPiece(length, width) {
+            getPiece(length, width, contextName) {
                 const idx = this.findBestOffcut(length, width);
+                let sourceDesc = "";
 
                 if (idx !== -1) {
-                    // Берем остаток
+                    // --- БЕРЕМ ОСТАТОК ---
                     const sourcePiece = this.offcuts.splice(idx, 1)[0];
+                    sourceDesc = `♻️ Взят остаток ${sourcePiece.length}x${sourcePiece.width}`;
                     
+                    // Остаток по длине
                     const remLen = sourcePiece.length - length;
                     if (remLen >= MIN_OFFCUT_LENGTH_MM) {
                         this.offcuts.push({ length: remLen, width: sourcePiece.width });
+                        sourceDesc += ` -> Новый ост. ${remLen}x${sourcePiece.width}`;
                     }
                     
+                    // Остаток по ширине
                     const remWidth = sourcePiece.width - width;
                     if (remWidth >= 100) {
                         this.offcuts.push({ length: length, width: remWidth });
+                        sourceDesc += ` + Полоса ${length}x${remWidth}`;
                     }
 
                 } else {
-                    // Новый лист
+                    // --- БЕРЕМ НОВЫЙ ЛИСТ ---
                     this.sheetsUsed++;
+                    sourceDesc = `🆕 Новый Лист №${this.sheetsUsed}`;
 
                     const remLen = this.panelLength - length;
                     if (remLen >= MIN_OFFCUT_LENGTH_MM) {
                         this.offcuts.push({ length: remLen, width: this.panelWidth });
+                        sourceDesc += ` -> Остаток длины ${remLen}мм`;
                     }
 
                     const remWidth = this.panelWidth - width;
                     if (remWidth >= 100) {
                         this.offcuts.push({ length: length, width: remWidth });
+                        sourceDesc += ` + Полоса ${length}x${remWidth}`;
                     }
                 }
+                
+                // Записываем в лог
+                this.addLog(`   🔸 ${contextName} (${length}x${width}): ${sourceDesc}`);
             }
 
-            processSurface(totalLength, cutLength) {
-                // Защита от деления на 0 или плохих данных
-                if (!cutLength || !totalLength) return;
+            processSurface(name, totalCoverLength, cutLength) {
+                this.addLog(`\n🔷 РАСЧЕТ: ${name.toUpperCase()}`);
+                this.addLog(`   Нужно закрыть ${totalCoverLength}мм. Режем куски длиной ${cutLength}мм.`);
 
-                const fullStrips = Math.floor(totalLength / this.panelWidth);
-                const lastStripWidth = totalLength % this.panelWidth;
+                const fullStrips = Math.floor(totalCoverLength / this.panelWidth);
+                const lastStripWidth = totalCoverLength % this.panelWidth;
 
+                // 1. Целые полосы
                 for (let i = 0; i < fullStrips; i++) {
-                    this.getPiece(cutLength, this.panelWidth);
+                    this.getPiece(cutLength, this.panelWidth, `${name} (целая ${i+1})`);
                 }
 
+                // 2. Добор
                 if (lastStripWidth > 0) {
-                    this.getPiece(cutLength, lastStripWidth);
+                    this.getPiece(cutLength, lastStripWidth, `${name} (добор ${lastStripWidth}мм)`);
                 }
             }
         }
 
-        // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+        // --- ЛОГИКА ---
         function runEngine(L, W, H, panelWidth) {
             const engine = new NestingEngine(panelWidth);
             
-            const floorCeilCutLen = W + 200; 
-            const floorCeilCoverLen = L;
+            // 1. Пол и Потолок
+            // Длина покрытия = L. Длина реза = W + 200
+            engine.processSurface("Пол", L, W + 200);
+            engine.processSurface("Потолок", L, W + 200);
             
-            // Пол и Потолок
-            engine.processSurface(floorCeilCoverLen, floorCeilCutLen); // Пол
-            engine.processSurface(floorCeilCoverLen, floorCeilCutLen); // Потолок
-            
-            // Стены (L - длина покрытия, H - высота панели)
-            engine.processSurface(L, H); // Стена Л
-            engine.processSurface(L, H); // Стена П
+            // 2. Стены
+            // Длина покрытия = L. Длина реза = H
+            engine.processSurface("Стена Лев", L, H);
+            engine.processSurface("Стена Прав", L, H);
 
-            // Торцы (W - ширина покрытия, H - высота панели)
-            engine.processSurface(W, H); // Задняя
-            engine.processSurface(W, H); // Двери
+            // 3. Торцы (НОВОЕ ПРАВИЛО: +200 к W и +200 к H)
+            // Длина покрытия = W + 200. Длина реза = H + 200.
+            const endCover = W + 200;
+            const endCut = H + 200;
+            
+            engine.processSurface("Задняя стенка", endCover, endCut);
+            engine.processSurface("Двери", endCover, endCut);
 
             return engine;
         }
 
         function formatReport(width, engine) {
             let html = '<div class="result-card">';
-            html += '<span class="result-title">🛠 Панели ' + width + 'мм</span>';
-            html += '<div class="result-line">📦 Листов 6000мм: <b>' + engine.sheetsUsed + ' шт</b></div>';
             
+            // Заголовок
+            html += '<span class="result-title">🛠 Панели ' + width + 'мм</span>';
+            html += '<div class="result-line">📦 ВСЕГО ЛИСТОВ: <b>' + engine.sheetsUsed + ' шт</b></div>';
+            
+            // Остатки
             const counts = {};
             engine.offcuts.forEach(o => {
                 const key = o.length + 'x' + o.width;
                 counts[key] = (counts[key] || 0) + 1;
             });
-
             let offcutsStr = "";
             for (const [size, count] of Object.entries(counts)) {
                 offcutsStr += '• ' + size + 'мм: ' + count + ' шт\n';
             }
-            if (!offcutsStr) offcutsStr = "Нет полезных остатков";
+            if (!offcutsStr) offcutsStr = "Нет";
+            html += '<div class="result-line">✂️ Полезные остатки:\n' + offcutsStr + '</div>';
 
-            html += '<div class="result-line">✂️ Остатки:</div>';
-            html += '<pre>' + offcutsStr + '</pre>';
+            // Детализация (Схема)
+            html += '<details>';
+            html += '<summary>📜 Показать схему раскроя</summary>';
+            html += '<div class="log-box">' + engine.log.join('\n') + '</div>';
+            html += '</details>';
+            
             html += '</div>';
             return html;
         }
 
-        // --- ГЛАВНАЯ ФУНКЦИЯ ---
+        // --- ОБРАБОТЧИК ---
         function handleCalculate() {
             const output = document.getElementById('output');
-            output.innerHTML = "Считаю..."; // Индикатор работы
+            output.innerHTML = "Считаю..."; 
             
             try {
-                // Чтение и проверка ввода
                 const L = parseInt(document.getElementById('lenL').value);
                 const W = parseInt(document.getElementById('widW').value);
                 const H = parseInt(document.getElementById('hgtH').value);
 
                 if (isNaN(L) || isNaN(W) || isNaN(H)) {
-                    alert("Пожалуйста, заполните все поля цифрами!");
-                    output.innerHTML = "";
-                    return;
-                }
-
-                // Очистка
-                output.innerHTML = ""; 
-
-                // Расчет 1000
-                const engine1000 = runEngine(L, W, H, 1000);
-                output.innerHTML += formatReport(1000, engine1000);
-
-                // Расчет 1190
-                const engine1190 = runEngine(L, W, H, 1190);
-                output.innerHTML += formatReport(1190, engine1190);
-                
-                // Вибрация для подтверждения (если доступна)
-                if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
-
-            } catch (error) {
-                // ЕСЛИ ОШИБКА — ПОКАЖЕМ ЕЁ НА ЭКРАНЕ
-                output.innerHTML = '<div class="error-msg">ОШИБКА: ' + error.message + '<br>' + error.stack + '</div>';
-            }
-        }
-
-        // Привязка кнопки (самый надежный способ)
-        document.getElementById('calcBtn').addEventListener('click', handleCalculate);
-
-    </script>
-</body>
-</html>
+                    output.innerHTML = '<div class="error-msg
