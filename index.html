@@ -41,7 +41,6 @@
         }
         button:active { opacity: 0.8; }
         
-        /* Карточка результата */
         .result-card {
             background: var(--tg-theme-secondary-bg-color, #f5f5f5);
             padding: 12px;
@@ -52,7 +51,6 @@
         .result-title { font-weight: bold; margin-bottom: 8px; display: block; font-size: 16px;}
         .result-line { margin-bottom: 4px; font-size: 14px; }
         
-        /* Лог действий */
         details { margin-top: 10px; }
         summary { cursor: pointer; font-size: 14px; color: var(--tg-theme-link-color, #3390ec); font-weight: bold; }
         .log-box {
@@ -68,10 +66,19 @@
             color: var(--tg-theme-text-color);
         }
         
-        .error-msg { color: red; font-weight: bold; margin-top: 10px; }
+        /* Стили для отладки */
+        #debug-status { margin-top: 20px; font-size: 12px; color: green; font-weight: bold; text-align: center;}
+        #global-error { 
+            display: none; 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(255, 255, 255, 0.95); 
+            color: red; padding: 20px; z-index: 9999; overflow: scroll;
+        }
     </style>
 </head>
 <body>
+
+    <div id="global-error"></div>
 
     <h2>Внутренние размеры (мм)</h2>
     
@@ -88,15 +95,30 @@
         <input type="number" id="hgtH" placeholder="2000">
     </div>
 
-    <button id="calcBtn">РАССЧИТАТЬ МАТЕРИАЛЫ</button>
+    <button onclick="handleCalculate()">РАССЧИТАТЬ МАТЕРИАЛЫ</button>
 
     <div id="output"></div>
+    <div id="debug-status">⏳ Инициализация...</div>
 
     <script>
+        // 1. ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК ОШИБОК (Покажет ошибку на экране)
+        window.onerror = function(message, source, lineno, colno, error) {
+            const errorBox = document.getElementById('global-error');
+            errorBox.style.display = 'block';
+            errorBox.innerHTML = `
+                <h3>💥 ПРОИЗОШЛА ОШИБКА</h3>
+                <p><b>Сообщение:</b> ${message}</p>
+                <p><b>Строка:</b> ${lineno}</p>
+                <pre>${error && error.stack ? error.stack : ''}</pre>
+                <button onclick="document.getElementById('global-error').style.display='none'">Закрыть</button>
+            `;
+        };
+
         // --- КОНФИГУРАЦИЯ ---
         const PANEL_LENGTH_MM = 6000;
-        const MIN_OFFCUT_LENGTH_MM = 400; // Меньше этого - мусор
+        const MIN_OFFCUT_LENGTH_MM = 400; 
 
+        // Инициализация Telegram
         let tg = window.Telegram.WebApp;
         try { tg.expand(); } catch(e) {}
 
@@ -106,11 +128,10 @@
                 this.panelWidth = panelWidth;
                 this.panelLength = PANEL_LENGTH_MM;
                 this.sheetsUsed = 0;
-                this.offcuts = []; // {length, width, id}
-                this.log = []; // Текстовый журнал
+                this.offcuts = []; 
+                this.log = []; 
             }
 
-            // Добавить запись в журнал
             addLog(msg) {
                 this.log.push(msg);
             }
@@ -137,18 +158,15 @@
                 let sourceDesc = "";
 
                 if (idx !== -1) {
-                    // --- БЕРЕМ ОСТАТОК ---
                     const sourcePiece = this.offcuts.splice(idx, 1)[0];
                     sourceDesc = `♻️ Взят остаток ${sourcePiece.length}x${sourcePiece.width}`;
                     
-                    // Остаток по длине
                     const remLen = sourcePiece.length - length;
                     if (remLen >= MIN_OFFCUT_LENGTH_MM) {
                         this.offcuts.push({ length: remLen, width: sourcePiece.width });
                         sourceDesc += ` -> Новый ост. ${remLen}x${sourcePiece.width}`;
                     }
                     
-                    // Остаток по ширине
                     const remWidth = sourcePiece.width - width;
                     if (remWidth >= 100) {
                         this.offcuts.push({ length: length, width: remWidth });
@@ -156,7 +174,6 @@
                     }
 
                 } else {
-                    // --- БЕРЕМ НОВЫЙ ЛИСТ ---
                     this.sheetsUsed++;
                     sourceDesc = `🆕 Новый Лист №${this.sheetsUsed}`;
 
@@ -173,7 +190,6 @@
                     }
                 }
                 
-                // Записываем в лог
                 this.addLog(`   🔸 ${contextName} (${length}x${width}): ${sourceDesc}`);
             }
 
@@ -184,12 +200,10 @@
                 const fullStrips = Math.floor(totalCoverLength / this.panelWidth);
                 const lastStripWidth = totalCoverLength % this.panelWidth;
 
-                // 1. Целые полосы
                 for (let i = 0; i < fullStrips; i++) {
                     this.getPiece(cutLength, this.panelWidth, `${name} (целая ${i+1})`);
                 }
 
-                // 2. Добор
                 if (lastStripWidth > 0) {
                     this.getPiece(cutLength, lastStripWidth, `${name} (добор ${lastStripWidth}мм)`);
                 }
@@ -200,18 +214,15 @@
         function runEngine(L, W, H, panelWidth) {
             const engine = new NestingEngine(panelWidth);
             
-            // 1. Пол и Потолок
-            // Длина покрытия = L. Длина реза = W + 200
+            // 1. Пол и Потолок (Ширина + 200)
             engine.processSurface("Пол", L, W + 200);
             engine.processSurface("Потолок", L, W + 200);
             
-            // 2. Стены
-            // Длина покрытия = L. Длина реза = H
+            // 2. Стены (Высота H)
             engine.processSurface("Стена Лев", L, H);
             engine.processSurface("Стена Прав", L, H);
 
             // 3. Торцы (НОВОЕ ПРАВИЛО: +200 к W и +200 к H)
-            // Длина покрытия = W + 200. Длина реза = H + 200.
             const endCover = W + 200;
             const endCut = H + 200;
             
@@ -224,11 +235,9 @@
         function formatReport(width, engine) {
             let html = '<div class="result-card">';
             
-            // Заголовок
             html += '<span class="result-title">🛠 Панели ' + width + 'мм</span>';
             html += '<div class="result-line">📦 ВСЕГО ЛИСТОВ: <b>' + engine.sheetsUsed + ' шт</b></div>';
             
-            // Остатки
             const counts = {};
             engine.offcuts.forEach(o => {
                 const key = o.length + 'x' + o.width;
@@ -241,7 +250,6 @@
             if (!offcutsStr) offcutsStr = "Нет";
             html += '<div class="result-line">✂️ Полезные остатки:\n' + offcutsStr + '</div>';
 
-            // Детализация (Схема)
             html += '<details>';
             html += '<summary>📜 Показать схему раскроя</summary>';
             html += '<div class="log-box">' + engine.log.join('\n') + '</div>';
@@ -256,10 +264,33 @@
             const output = document.getElementById('output');
             output.innerHTML = "Считаю..."; 
             
-            try {
-                const L = parseInt(document.getElementById('lenL').value);
-                const W = parseInt(document.getElementById('widW').value);
-                const H = parseInt(document.getElementById('hgtH').value);
+            // Принудительно читаем как числа
+            const L = parseInt(document.getElementById('lenL').value);
+            const W = parseInt(document.getElementById('widW').value);
+            const H = parseInt(document.getElementById('hgtH').value);
 
-                if (isNaN(L) || isNaN(W) || isNaN(H)) {
-                    output.innerHTML = '<div class="error-msg
+            // Проверка на NaN
+            if (isNaN(L) || isNaN(W) || isNaN(H)) {
+                output.innerHTML = '<div class="error-msg">Ошибка: Введите все цифры!</div>';
+                return;
+            }
+
+            output.innerHTML = ""; 
+
+            // 1000мм
+            const engine1000 = runEngine(L, W, H, 1000);
+            output.innerHTML += formatReport(1000, engine1000);
+
+            // 1190мм
+            const engine1190 = runEngine(L, W, H, 1190);
+            output.innerHTML += formatReport(1190, engine1190);
+            
+            if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+        }
+
+        // СИГНАЛ, ЧТО СКРИПТ ЗАГРУЗИЛСЯ
+        document.getElementById('debug-status').innerHTML = "🟢 СИСТЕМА ГОТОВА";
+        
+    </script>
+</body>
+</html>
